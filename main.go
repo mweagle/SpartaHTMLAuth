@@ -55,8 +55,14 @@ func helloWorldAuthorizer(ctx context.Context,
 		"ctx":   awsContext,
 		"Event": request,
 	}).Info("Checking current API Gateway stage status")
-	methodArn, _ := request["methodArn"].(string)
 
+	// Get the ARN and the Authorization Token
+	methodArn, _ := request["methodArn"].(string)
+	authToken, _ := request["authorizationToken"].(string)
+	effect := "Deny"
+	if authToken == "Sparta" {
+		effect = "Allow"
+	}
 	authResponse := &authorizationResponse{
 		PrincipalID: "user",
 		PolicyDocument: gocf.IAMPolicyDocument{
@@ -66,7 +72,7 @@ func helloWorldAuthorizer(ctx context.Context,
 					Action: gocf.StringList(
 						gocf.String("execute-api:Invoke"),
 					),
-					Effect: "Allow",
+					Effect: effect,
 					Resource: gocf.StringList(
 						gocf.String(methodArn),
 					),
@@ -115,7 +121,8 @@ func helloWorld(ctx context.Context,
 }
 
 func spartaHTMLLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
-
+	lambbaCustomAuthorizer := sparta.CloudFormationResourceName("CustomAuth",
+		"CustomAuth")
 	lambdaAuthFunction := sparta.LambdaName(helloWorldAuthorizer)
 	lambdaAuthRole := sparta.CloudFormationResourceName("AuthRole", "AuthRole")
 
@@ -123,26 +130,31 @@ func spartaHTMLLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
 	lambdaFn := sparta.HandleAWSLambda(sparta.LambdaName(helloWorld),
 		helloWorld,
 		sparta.IAMRoleDefinition{})
+
 	lambdaAuthFn := sparta.HandleAWSLambda(lambdaAuthFunction,
 		helloWorldAuthorizer,
 		sparta.IAMRoleDefinition{})
+
+	lambdaFn.DependsOn = []string{lambbaCustomAuthorizer}
 
 	if nil != api {
 		apiGatewayResource, _ := api.NewResource("/hello", lambdaFn)
 
 		// We only return http.StatusOK
-		apiMethod, apiMethodErr := apiGatewayResource.NewMethod("GET",
+		apiMethod, apiMethodErr := apiGatewayResource.NewAuthorizedMethod("GET",
+			gocf.Ref(lambbaCustomAuthorizer),
 			http.StatusOK,
 			http.StatusInternalServerError)
 		if nil != apiMethodErr {
 			panic("Failed to create /hello resource: " + apiMethodErr.Error())
 		}
+		// Whitelist the Authorization header so that we can check it
 		apiMethod.Parameters["method.request.header.Authorization"] = true
 		// The lambda resource only supports application/json Unmarshallable
 		// requests.
 		apiMethod.SupportedRequestContentTypes = []string{"application/json"}
 	}
-	// Create the custom authorizer, just don't register it...
+	// Create the custom authorizer
 	authDecorator := func(serviceName string,
 		lambdaResourceName string,
 		lambdaResource gocf.LambdaFunction,
@@ -154,9 +166,11 @@ func spartaHTMLLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
 		context map[string]interface{},
 		logger *logrus.Logger) error {
 
-		template.AddResource("CustomAuthorizer",
+		////////////////////////////////////////////////////////////////////////////
+		// API Gateway custom authorizer
+		authResource := template.AddResource(lambbaCustomAuthorizer,
 			&gocf.APIGatewayAuthorizer{
-				Name: gocf.String("CustomAuthorizer"),
+				Name: gocf.String("TokenBasedAuthorizer"),
 				Type: gocf.String("TOKEN"),
 				AuthorizerResultTTLInSeconds: gocf.Integer(300),
 				IDentitySource:               gocf.String("method.request.header.Authorization"),
@@ -168,9 +182,11 @@ func spartaHTMLLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
 					gocf.GetAtt(lambdaAuthFn.LogicalResourceName(), "Arn"),
 					gocf.String("/invocations")),
 			})
-		// AuthRole
+		authResource.DependsOn = []string{lambdaAuthFn.LogicalResourceName()}
 		template.AddResource(lambdaAuthRole,
 			authLambdaRole())
+
+		////////////////////////////////////////////////////////////////////////////
 		// API Gateway permission
 		perm := &gocf.LambdaPermission{
 			Action:       gocf.String("lambda:InvokeFunction"),
@@ -178,6 +194,24 @@ func spartaHTMLLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
 			Principal:    gocf.String(sparta.APIGatewayPrincipal),
 		}
 		template.AddResource("APIGatewayAuthPerm", perm)
+
+		////////////////////////////////////////////////////////////////////////////
+		// Finally, customize the Gateway response
+		// Ref: https://docs.aws.amazon.com/apigateway/api-reference/resource/gateway-response/
+		// * https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-gateway-response-using-the-console.html
+		// * https://forums.aws.amazon.com/thread.jspa?messageID=710770&#710770
+		gatewayResponseResourceName := "Gateway403Response"
+		gatewayResponseResource := &gocf.APIGatewayGatewayResponse{
+			StatusCode:   gocf.String("403"),
+			RestAPIID:    gocf.Ref(api.LogicalResourceName()).String(),
+			ResponseType: gocf.String("ACCESS_DENIED"),
+			ResponseParameters: map[string]interface{}{
+				"gatewayresponse.header.Access-Control-Allow-Origin":  "'*'",
+				"gatewayresponse.header.Access-Control-Allow-Headers": "'*'",
+			},
+		}
+		template.AddResource(gatewayResponseResourceName,
+			gatewayResponseResource)
 		return nil
 	}
 	lambdaAuthFn.Decorators = append(lambdaAuthFn.Decorators,

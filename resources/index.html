@@ -47,6 +47,10 @@
 		});
 
 		var corsRequest = function () {
+			function setHeader(xhr) {
+				xhr.setRequestHeader('Authorization', 'Sparta');
+			}
+
 			$("#corsResponseDiv").hide();
 			var updateResponseBlock = function (title, data) {
 				$("#corsResponseDiv").show();
@@ -60,6 +64,7 @@
 			$.ajax({
 				url: corsURL,
 				type: 'GET',
+				beforeSend: setHeader,
 				success: function (data) {
 					var end = new Date().getTime();
 					var duration = end - start;
@@ -71,6 +76,7 @@
 					updateResponseBlock("Error (" + duration + " ms)", err);
 				}
 			});
+
 			return false;
 		}
 	</script>
