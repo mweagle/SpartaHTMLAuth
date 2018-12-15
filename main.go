@@ -7,6 +7,7 @@ import (
 
 	lambdaContext "github.com/aws/aws-lambda-go/lambdacontext"
 	sparta "github.com/mweagle/Sparta"
+	spartaAPIGateway "github.com/mweagle/Sparta/aws/apigateway"
 	spartaCF "github.com/mweagle/Sparta/aws/cloudformation"
 	spartaAWSEvents "github.com/mweagle/Sparta/aws/events"
 	gocf "github.com/mweagle/go-cloudformation"
@@ -94,7 +95,7 @@ type helloWorldResponse struct {
 }
 
 func helloWorld(ctx context.Context,
-	gatewayEvent spartaAWSEvents.APIGatewayRequest) (interface{}, error) {
+	gatewayEvent spartaAWSEvents.APIGatewayRequest) (*spartaAPIGateway.Response, error) {
 	/*
 		 To return an error back to the client using a standard HTTP status code:
 
@@ -114,10 +115,10 @@ func helloWorld(ctx context.Context,
 	}
 
 	// Return a message, together with the incoming input...
-	return &helloWorldResponse{
+	return spartaAPIGateway.NewResponse(http.StatusOK, &helloWorldResponse{
 		Message: fmt.Sprintf("Hello world 🌏"),
 		Request: gatewayEvent,
-	}, nil
+	}), nil
 }
 
 func spartaHTMLLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
@@ -127,11 +128,11 @@ func spartaHTMLLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
 	lambdaAuthRole := sparta.CloudFormationResourceName("AuthRole", "AuthRole")
 
 	var lambdaFunctions []*sparta.LambdaAWSInfo
-	lambdaFn := sparta.HandleAWSLambda(sparta.LambdaName(helloWorld),
+	lambdaFn, _ := sparta.NewAWSLambda(sparta.LambdaName(helloWorld),
 		helloWorld,
 		sparta.IAMRoleDefinition{})
 
-	lambdaAuthFn := sparta.HandleAWSLambda(lambdaAuthFunction,
+	lambdaAuthFn, _ := sparta.NewAWSLambda(lambdaAuthFunction,
 		helloWorldAuthorizer,
 		sparta.IAMRoleDefinition{})
 
@@ -170,8 +171,8 @@ func spartaHTMLLambdaFunctions(api *sparta.API) []*sparta.LambdaAWSInfo {
 		// API Gateway custom authorizer
 		authResource := template.AddResource(lambbaCustomAuthorizer,
 			&gocf.APIGatewayAuthorizer{
-				Name: gocf.String("TokenBasedAuthorizer"),
-				Type: gocf.String("TOKEN"),
+				Name:                         gocf.String("TokenBasedAuthorizer"),
+				Type:                         gocf.String("TOKEN"),
 				AuthorizerResultTTLInSeconds: gocf.Integer(300),
 				IDentitySource:               gocf.String("method.request.header.Authorization"),
 				RestAPIID:                    gocf.Ref(api.LogicalResourceName()).String(),
